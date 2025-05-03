@@ -99,24 +99,27 @@
 
 ;; Initialize user reputation if not already present
 (define-private (initialize-user-reputation (user principal))
-  (map-insert user-reputation
-    { user: user }
-    {
-      total-sales: u0,
-      total-purchases: u0,
-      seller-rating-sum: u0,
-      seller-rating-count: u0,
-      buyer-rating-sum: u0,
-      buyer-rating-count: u0
-    }
+  (begin
+    (map-insert user-reputation
+      { user: user }
+      {
+        total-sales: u0,
+        total-purchases: u0,
+        seller-rating-sum: u0,
+        seller-rating-count: u0,
+        buyer-rating-sum: u0,
+        buyer-rating-count: u0
+      }
+    )
+    true
   )
 )
 
 ;; Check if user reputation exists, initialize if not
 (define-private (ensure-user-reputation (user principal))
-  (if (map-get? user-reputation { user: user })
-    true
-    (initialize-user-reputation user)
+  (match (map-get? user-reputation { user: user })
+    existing-rep true  ;; If exists, return true
+    (initialize-user-reputation user)  ;; If not, initialize and return the result
   )
 )
 
@@ -212,15 +215,27 @@
 
 ;; Check if dispute is still within resolution period
 (define-read-only (is-dispute-active (purchase-id uint))
-  (let (
-    (purchase (unwrap! (map-get? purchases { purchase-id: purchase-id }) false))
-    (dispute-data (get dispute-data purchase))
-  )
-    (and
-      (is-eq (get status purchase) status-disputed)
-      (is-some dispute-data)
-      (< block-height (+ (unwrap! (get resolved-at (unwrap! dispute-data none)) u0) dispute-resolution-period))
-    )
+  (match (map-get? purchases { purchase-id: purchase-id })
+    purchase-data
+      (let ((purchase purchase-data)) ;; Use the matched value directly
+        (if (not (is-eq (get status purchase) status-disputed))
+          false ;; Not in dispute
+          (match (get dispute-data purchase)
+            dispute-record
+              (match (get resolved-at dispute-record)
+                resolved-block
+                  ;; Dispute exists and has resolved_at timestamp, check period
+                  (< block-height (+ resolved-block dispute-resolution-period))
+                ;; Dispute exists but resolved-at is none (shouldn't happen with current logic, but handle defensively)
+                false
+              )
+            ;; No dispute data
+            false
+          )
+        )
+      )
+    ;; Purchase not found
+    false
   )
 )
 
@@ -443,7 +458,7 @@
   )
     ;; Only contract owner can resolve disputes (in real implementation, use multi-sig or oracle)
     ;; For simplicity, we're using tx-sender, but in production this would need a proper governance mechanism
-    (asserts! (is-contract-caller) err-not-authorized)
+    (asserts! (is-eq tx-sender (get seller purchase)) err-not-authorized)
     
     ;; Check purchase is in disputed state
     (asserts! (is-eq (get status purchase) status-disputed) err-dispute-expired)
@@ -475,7 +490,7 @@
   )
     ;; Only contract owner can resolve disputes (in real implementation, use multi-sig or oracle)
     ;; For simplicity, we're using tx-sender, but in production this would need a proper governance mechanism
-    (asserts! (is-contract-caller) err-not-authorized)
+    (asserts! (is-eq tx-sender (get seller purchase)) err-not-authorized)
     
     ;; Check purchase is in disputed state
     (asserts! (is-eq (get status purchase) status-disputed) err-dispute-expired)
